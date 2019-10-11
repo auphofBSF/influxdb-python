@@ -142,6 +142,7 @@ class DataFrameClient(InfluxDBClient):
     def query(self,
               query,
               params=None,
+              bind_params=None,
               epoch=None,
               expected_response_code=200,
               database=None,
@@ -153,8 +154,18 @@ class DataFrameClient(InfluxDBClient):
         """
         Query data into a DataFrame.
 
+        .. danger::
+            In order to avoid injection vulnerabilities (similar to `SQL
+            injection <https://www.owasp.org/index.php/SQL_Injection>`_
+            vulnerabilities), do not directly include untrusted data into the
+            ``query`` parameter, use ``bind_params`` instead.
+
         :param query: the actual query string
         :param params: additional parameters for the request, defaults to {}
+        :param bind_params: bind parameters for the query:
+            any variable in the query written as ``'$var_name'`` will be
+            replaced with ``bind_params['var_name']``. Only works in the
+            ``WHERE`` clause and takes precedence over ``params['params']``
         :param epoch: response timestamps to be in epoch format either 'h',
             'm', 's', 'ms', 'u', or 'ns',defaults to `None` which is
             RFC3339 UTC format with nanosecond precision
@@ -172,6 +183,7 @@ class DataFrameClient(InfluxDBClient):
         :rtype: :class:`~.ResultSet`
         """
         query_args = dict(params=params,
+                          bind_params=bind_params,
                           epoch=epoch,
                           expected_response_code=expected_response_code,
                           raise_errors=raise_errors,
@@ -202,7 +214,8 @@ class DataFrameClient(InfluxDBClient):
             df = pd.DataFrame(data)
             df.time = pd.to_datetime(df.time)
             df.set_index('time', inplace=True)
-            df.index = df.index.tz_localize('UTC')
+            if df.index.tzinfo is None:
+                df.index = df.index.tz_localize('UTC')
             df.index.name = None
             result[key].append(df)
         for key, data in result.items():
@@ -350,7 +363,7 @@ class DataFrameClient(InfluxDBClient):
             tag_df = self._stringify_dataframe(
                 tag_df, numeric_precision, datatype='tag')
 
-            # join preprendded tags, leaving None values out
+            # join prepended tags, leaving None values out
             tags = tag_df.apply(
                 lambda s: [',' + s.name + '=' + v if v else '' for v in s])
             tags = tags.sum(axis=1)
@@ -379,6 +392,8 @@ class DataFrameClient(InfluxDBClient):
             field_df.columns[1:]]
         field_df = field_df.where(~mask_null, '')  # drop Null entries
         fields = field_df.sum(axis=1)
+        # take out leading , where first column has a Null value
+        fields = fields.str.lstrip(",")
         del field_df
 
         # Generate line protocol string

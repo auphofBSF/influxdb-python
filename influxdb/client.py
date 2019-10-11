@@ -61,6 +61,13 @@ class InfluxDBClient(object):
     :type proxies: dict
     :param path: path of InfluxDB on the server to connect, defaults to ''
     :type path: str
+    :param cert: Path to client certificate information to use for mutual TLS
+        authentication. You can specify a local cert to use
+        as a single file containing the private key and the certificate, or as
+        a tuple of both files’ paths, defaults to None
+    :type cert: str
+
+    :raises ValueError: if cert is provided but ssl is disabled (set to False)
     """
 
     def __init__(self,
@@ -78,6 +85,7 @@ class InfluxDBClient(object):
                  proxies=None,
                  pool_size=10,
                  path='',
+                 cert=None,
                  ):
         """Construct a new InfluxDBClient object."""
         self.__host = host
@@ -119,6 +127,14 @@ class InfluxDBClient(object):
             self._proxies = {}
         else:
             self._proxies = proxies
+
+        if cert:
+            if not ssl:
+                raise ValueError(
+                    "Client certificate provided but ssl is disabled."
+                )
+            else:
+                self._session.cert = cert
 
         self.__baseurl = "{0}://{1}:{2}{3}".format(
             self._scheme,
@@ -345,6 +361,7 @@ class InfluxDBClient(object):
     def query(self,
               query,
               params=None,
+              bind_params=None,
               epoch=None,
               expected_response_code=200,
               database=None,
@@ -354,12 +371,24 @@ class InfluxDBClient(object):
               method="GET"):
         """Send a query to InfluxDB.
 
+        .. danger::
+            In order to avoid injection vulnerabilities (similar to `SQL
+            injection <https://www.owasp.org/index.php/SQL_Injection>`_
+            vulnerabilities), do not directly include untrusted data into the
+            ``query`` parameter, use ``bind_params`` instead.
+
         :param query: the actual query string
         :type query: str
 
         :param params: additional parameters for the request,
             defaults to {}
         :type params: dict
+
+        :param bind_params: bind parameters for the query:
+            any variable in the query written as ``'$var_name'`` will be
+            replaced with ``bind_params['var_name']``. Only works in the
+            ``WHERE`` clause and takes precedence over ``params['params']``
+        :type bind_params: dict
 
         :param epoch: response timestamps to be in epoch format either 'h',
             'm', 's', 'ms', 'u', or 'ns',defaults to `None` which is
@@ -393,6 +422,11 @@ class InfluxDBClient(object):
         """
         if params is None:
             params = {}
+
+        if bind_params is not None:
+            params_dict = json.loads(params.get('params', '{}'))
+            params_dict.update(bind_params)
+            params['params'] = json.dumps(params_dict)
 
         params['q'] = query
         params['db'] = database or self._database
@@ -440,7 +474,8 @@ class InfluxDBClient(object):
                      retention_policy=None,
                      tags=None,
                      batch_size=None,
-                     protocol='json'
+                     protocol='json',
+                     consistency=None
                      ):
         """Write to multiple time series names.
 
@@ -468,6 +503,9 @@ class InfluxDBClient(object):
         :type batch_size: int
         :param protocol: Protocol for writing data. Either 'line' or 'json'.
         :type protocol: str
+        :param consistency: Consistency for the points.
+            One of {'any','one','quorum','all'}.
+        :type consistency: str
         :returns: True, if the operation is successful
         :rtype: bool
 
@@ -480,14 +518,16 @@ class InfluxDBClient(object):
                                    time_precision=time_precision,
                                    database=database,
                                    retention_policy=retention_policy,
-                                   tags=tags, protocol=protocol)
+                                   tags=tags, protocol=protocol,
+                                   consistency=consistency)
             return True
 
         return self._write_points(points=points,
                                   time_precision=time_precision,
                                   database=database,
                                   retention_policy=retention_policy,
-                                  tags=tags, protocol=protocol)
+                                  tags=tags, protocol=protocol,
+                                  consistency=consistency)
 
     def ping(self):
         """Check connectivity to InfluxDB.
@@ -513,11 +553,15 @@ class InfluxDBClient(object):
                       database,
                       retention_policy,
                       tags,
-                      protocol='json'):
+                      protocol='json',
+                      consistency=None):
         if time_precision not in ['n', 'u', 'ms', 's', 'm', 'h', None]:
             raise ValueError(
                 "Invalid time precision is given. "
                 "(use 'n', 'u', 'ms', 's', 'm' or 'h')")
+
+        if consistency not in ['any', 'one', 'quorum', 'all', None]:
+            raise ValueError('Invalid consistency: {}'.format(consistency))
 
         if protocol == 'json':
             data = {
@@ -532,6 +576,9 @@ class InfluxDBClient(object):
         params = {
             'db': database or self._database
         }
+
+        if consistency is not None:
+            params['consistency'] = consistency
 
         if time_precision is not None:
             params['precision'] = time_precision
@@ -809,7 +856,9 @@ class InfluxDBClient(object):
     def delete_series(self, database=None, measurement=None, tags=None):
         """Delete series from a database.
 
-        Series can be filtered by measurement and tags.
+        Series must be filtered by either measurement and tags.
+        This method cannot be used to delete all series, use
+        `drop_database` instead.
 
         :param database: the database from which the series should be
             deleted, defaults to client's current database
@@ -907,6 +956,98 @@ class InfluxDBClient(object):
         """
         text = "SHOW GRANTS FOR {0}".format(quote_ident(username))
         return list(self.query(text).get_points())
+
+    def get_list_continuous_queries(self):
+        """Get the list of continuous queries in InfluxDB.
+
+        :return: all CQs in InfluxDB
+        :rtype: list of dictionaries
+
+        :Example:
+
+        ::
+
+            >> cqs = client.get_list_cqs()
+            >> cqs
+            [
+                {
+                    u'db1': []
+                },
+                {
+                    u'db2': [
+                        {
+                            u'name': u'vampire',
+                            u'query': u'CREATE CONTINUOUS QUERY vampire ON '
+                                       'mydb BEGIN SELECT count(dracula) INTO '
+                                       'mydb.autogen.all_of_them FROM '
+                                       'mydb.autogen.one GROUP BY time(5m) END'
+                        }
+                    ]
+                }
+            ]
+        """
+        query_string = "SHOW CONTINUOUS QUERIES"
+        return [{sk[0]: list(p)} for sk, p in self.query(query_string).items()]
+
+    def create_continuous_query(self, name, select, database=None,
+                                resample_opts=None):
+        r"""Create a continuous query for a database.
+
+        :param name: the name of continuous query to create
+        :type name: str
+        :param select: select statement for the continuous query
+        :type select: str
+        :param database: the database for which the continuous query is
+            created. Defaults to current client's database
+        :type database: str
+        :param resample_opts: resample options
+        :type resample_opts: str
+
+        :Example:
+
+        ::
+
+            >> select_clause = 'SELECT mean("value") INTO "cpu_mean" ' \
+            ...                 'FROM "cpu" GROUP BY time(1m)'
+            >> client.create_continuous_query(
+            ...     'cpu_mean', select_clause, 'db_name', 'EVERY 10s FOR 2m'
+            ... )
+            >> client.get_list_continuous_queries()
+            [
+                {
+                    'db_name': [
+                        {
+                            'name': 'cpu_mean',
+                            'query': 'CREATE CONTINUOUS QUERY "cpu_mean" '
+                                    'ON "db_name" '
+                                    'RESAMPLE EVERY 10s FOR 2m '
+                                    'BEGIN SELECT mean("value") '
+                                    'INTO "cpu_mean" FROM "cpu" '
+                                    'GROUP BY time(1m) END'
+                        }
+                    ]
+                }
+            ]
+        """
+        query_string = (
+            "CREATE CONTINUOUS QUERY {0} ON {1}{2} BEGIN {3} END"
+        ).format(quote_ident(name), quote_ident(database or self._database),
+                 ' RESAMPLE ' + resample_opts if resample_opts else '', select)
+        self.query(query_string)
+
+    def drop_continuous_query(self, name, database=None):
+        """Drop an existing continuous query for a database.
+
+        :param name: the name of continuous query to drop
+        :type name: str
+        :param database: the database for which the continuous query is
+            dropped. Defaults to current client's database
+        :type database: str
+        """
+        query_string = (
+            "DROP CONTINUOUS QUERY {0} ON {1}"
+        ).format(quote_ident(name), quote_ident(database or self._database))
+        self.query(query_string)
 
     def send_packet(self, packet, protocol='json', time_precision=None):
         """Send an UDP packet.
