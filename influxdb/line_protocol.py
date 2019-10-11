@@ -9,38 +9,55 @@ from __future__ import unicode_literals
 from datetime import datetime
 from numbers import Integral
 
-from pytz import UTC
-from dateutil.parser import parse
 from six import iteritems, binary_type, text_type, integer_types, PY2
 
-EPOCH = UTC.localize(datetime.utcfromtimestamp(0))
+import pandas as pd  # Provide for ns timestamps
+import numpy as np  # Provided for accurate precision_factor conversion
+
+EPOCH = pd.Timestamp(0, tz='UTC')
+
+# Precisions factors must be int for correct calculation to ints.
+# if precision is float the result of a floor calc is an approximation
+# Example : the issue is only observable with nanosecond resolution
+#           values are greater than 895ns
+# ts = pd.Timestamp('2013-01-01 23:10:55.123456987+00:00')
+# ts_ns = np.int64(ts.value)
+# # For conversion to microsecond
+# precision_factor=1e3
+# expected_ts_us = 1357081855123456
+# np.int64(ts_ns // precision_factor) #  is INCORRECT 1357081855123457
+# np.int64(ts_ns // np.int64(precision_factor) #  is CORRECT 1357081855123456
+
+_time_precision_factors = {"n": 1,
+                           "u": np.int64(1e3),
+                           "ms": np.int64(1e6),
+                           "s": np.int64(1e9),
+                           "m": np.int64(1e9 * 60),
+                           "h": np.int64(1e9 * 3600), }
 
 
-def _convert_timestamp(timestamp, precision=None):
+def _convert_timestamp(timestamp, time_precision=None):
     if isinstance(timestamp, Integral):
         return timestamp  # assume precision is correct if timestamp is int
 
     if isinstance(_get_unicode(timestamp), text_type):
-        timestamp = parse(timestamp)
+        timestamp = pd.Timestamp(timestamp)
 
-    if isinstance(timestamp, datetime):
+    if isinstance(timestamp, datetime):  # change to pandas.Timestamp
         if not timestamp.tzinfo:
-            timestamp = UTC.localize(timestamp)
+            timestamp = pd.Timestamp(timestamp, tz='UTC')
+        else:
+            timestamp = pd.Timestamp(timestamp)
 
-        ns = (timestamp - EPOCH).total_seconds() * 1e9
-        if precision is None or precision == 'n':
-            return ns
-        elif precision == 'u':
-            return ns / 1e3
-        elif precision == 'ms':
-            return ns / 1e6
-        elif precision == 's':
-            return ns / 1e9
-        elif precision == 'm':
-            return ns / 1e9 / 60
-        elif precision == 'h':
-            return ns / 1e9 / 3600
+    if isinstance(timestamp, pd._libs.tslib.Timestamp):
+        if not timestamp.tzinfo:  # set to UTC for time since EPOCH
+            timestamp = pd.Timestamp(timestamp, tz='UTC')
+        else:
+            timestamp = timestamp.astimezone('UTC')
 
+        nanoseconds = (timestamp - EPOCH).value
+        precision_factor = _time_precision_factors.get(time_precision, 1)
+        return np.int64(nanoseconds // np.int64(precision_factor))
     raise ValueError(timestamp)
 
 

@@ -11,6 +11,7 @@ import unittest
 from pytz import UTC, timezone
 
 from influxdb import line_protocol
+import pandas as pd
 
 
 class TestLineProtocol(unittest.TestCase):
@@ -46,33 +47,114 @@ class TestLineProtocol(unittest.TestCase):
             'bool_val=True,float_val=1.1,int_val=1i,string_val="hello!"\n'
         )
 
+    def test_convert_timestamp(self):
+        """Test line_protocol _convert_timestamp
+
+        Precisions factors must be int for correct calculation to ints. if
+        precision is float the result of a floor calc is an approximation
+        Choosing the test value is important that nanosecond resolution values
+        are greater than 895ns
+
+        Example : the issue is only observable ns > 895ns
+        # ts = pd.Timestamp('2013-01-01 23:10:55.123456987+00:00')
+        # ts_ns = np.int64(ts.value)
+        # # For conversion to microsecond
+        # precision_factor=1e3
+        # expected_ts_us = 1357081855123456
+        # # following is INCORRECT 1357081855123457
+        # np.int64(ts_ns // precision_factor)
+        # # following is CORRECT 1357081855123456
+        # np.int64(ts_ns // np.int64(precision_factor)
+
+        """
+
+        # TODO: add tests for timestamp instances
+        # 1)  isinstance(timestamp, Integral)
+        # 2)  isinstance(_get_unicode(timestamp), text_type)
+        # 3)  isinstance(timestamp, datetime) with tzinfo
+        # 4)  isinstance(timestamp, datetime) without tzinfo
+
+        timestamp = pd.Timestamp('2013-01-01 23:10:55.123456987+00:00')
+        self.assertEqual(
+            line_protocol._convert_timestamp(timestamp),
+            1357081855123456987
+        )
+        self.assertEqual(
+            line_protocol._convert_timestamp(timestamp, time_precision='h'),
+            1357081855 // 3600
+        )
+        self.assertEqual(
+            line_protocol._convert_timestamp(timestamp, time_precision='m'),
+            1357081855 // 60
+        )
+        self.assertEqual(
+            line_protocol._convert_timestamp(timestamp, time_precision='s'),
+            1357081855
+        )
+        self.assertEqual(
+            line_protocol._convert_timestamp(timestamp, time_precision='ms'),
+            1357081855123
+        )
+        self.assertEqual(
+            line_protocol._convert_timestamp(timestamp, time_precision='u'),
+            1357081855123456
+        )
+        self.assertEqual(
+            line_protocol._convert_timestamp(timestamp, time_precision='n'),
+            1357081855123456987
+        )
+
     def test_timezone(self):
         """Test timezone in TestLineProtocol object."""
+        # datetime tests
         dt = datetime(2009, 11, 10, 23, 0, 0, 123456)
         utc = UTC.localize(dt)
         berlin = timezone('Europe/Berlin').localize(dt)
         eastern = berlin.astimezone(timezone('US/Eastern'))
-        data = {
-            "points": [
-                {"measurement": "A", "fields": {"val": 1},
-                 "time": 0},
-                {"measurement": "A", "fields": {"val": 1},
-                 "time": "2009-11-10T23:00:00.123456Z"},
-                {"measurement": "A", "fields": {"val": 1}, "time": dt},
-                {"measurement": "A", "fields": {"val": 1}, "time": utc},
-                {"measurement": "A", "fields": {"val": 1}, "time": berlin},
-                {"measurement": "A", "fields": {"val": 1}, "time": eastern},
-            ]
+        # pandas ns timestamp tests
+        pddt = pd.Timestamp('2009-11-10 23:00:00.123456987')
+        pdutc = pd.Timestamp(pddt, tz='UTC')
+        pdberlin = pdutc.astimezone('Europe/Berlin')
+        pdeastern = pdberlin.astimezone('US/Eastern')
+
+        data = {"points": [
+            {"measurement": "A", "fields": {"val": 1}, "time": 0},
+            # string representations
+            # String version for datetime
+            {"measurement": "A", "fields": {"val": 1},
+             "time": "2009-11-10T23:00:00.123456Z"},
+            # String version for pandas ns timestamp
+            {"measurement": "A", "fields": {"val": 1},
+             "time": "2009-11-10 23:00:00.123456987"},
+            # datetime
+            {"measurement": "A", "fields": {"val": 1}, "time": dt},
+            {"measurement": "A", "fields": {"val": 1}, "time": utc},
+            {"measurement": "A", "fields": {"val": 1}, "time": berlin},
+            {"measurement": "A", "fields": {"val": 1}, "time": eastern},
+            # pandas timestamp
+            {"measurement": "A", "fields": {"val": 1}, "time": pddt},
+            {"measurement": "A", "fields": {"val": 1}, "time": pdutc},
+            {"measurement": "A", "fields": {"val": 1}, "time": pdberlin},
+            {"measurement": "A", "fields": {"val": 1}, "time": pdeastern},
+        ]
         }
+
         self.assertEqual(
             line_protocol.make_lines(data),
             '\n'.join([
                 'A val=1i 0',
                 'A val=1i 1257894000123456000',
+                'A val=1i 1257894000123456987',
+                # datetime results
                 'A val=1i 1257894000123456000',
                 'A val=1i 1257894000123456000',
                 'A val=1i 1257890400123456000',
                 'A val=1i 1257890400123456000',
+                # pandas ns timestamp results
+                'A val=1i 1257894000123456987',
+                'A val=1i 1257894000123456987',
+                'A val=1i 1257894000123456987',
+                'A val=1i 1257894000123456987',
             ]) + '\n'
         )
 

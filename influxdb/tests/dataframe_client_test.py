@@ -994,37 +994,55 @@ class TestDataFrameClient(unittest.TestCase):
             )
 
     def test_datetime_to_epoch(self):
-        """Test convert datetime to epoch in TestDataFrameClient object."""
-        timestamp = pd.Timestamp('2013-01-01 00:00:00.000+00:00')
+        """Test convert datetime to epoch in TestDataFrameClient object.
+
+        Precisions factors must be int for correct calculation to ints.
+        if precision is float the result of a floor calc is an approximation
+        Choosing the test value is important that nanosecond resolution
+        values are greater than 895ns
+
+        Example : the issue is only observable ns > 895ns
+        # ts = pd.Timestamp('2013-01-01 23:10:55.123456987+00:00')
+        # ts_ns = np.int64(ts.value)
+        # # For conversion to microsecond
+        # precision_factor=1e3
+        # expected_ts_us = 1357081855123456
+        # following is INCORRECT 1357081855123457
+        # np.int64(ts_ns // precision_factor)
+        # following is CORRECT 1357081855123456
+        # np.int64(ts_ns // np.int64(precision_factor)
+
+        """
+        timestamp = pd.Timestamp('2013-01-01 23:10:55.123456987+00:00')
         cli = DataFrameClient('host', 8086, 'username', 'password', 'db')
 
         self.assertEqual(
             cli._datetime_to_epoch(timestamp),
-            1356998400.0
+            1357081855
         )
         self.assertEqual(
             cli._datetime_to_epoch(timestamp, time_precision='h'),
-            1356998400.0 / 3600
+            1357081855 // 3600
         )
         self.assertEqual(
             cli._datetime_to_epoch(timestamp, time_precision='m'),
-            1356998400.0 / 60
+            1357081855 // 60
         )
         self.assertEqual(
             cli._datetime_to_epoch(timestamp, time_precision='s'),
-            1356998400.0
+            1357081855
         )
         self.assertEqual(
             cli._datetime_to_epoch(timestamp, time_precision='ms'),
-            1356998400000.0
+            1357081855123
         )
         self.assertEqual(
             cli._datetime_to_epoch(timestamp, time_precision='u'),
-            1356998400000000.0
+            1357081855123456
         )
         self.assertEqual(
             cli._datetime_to_epoch(timestamp, time_precision='n'),
-            1356998400000000000.0
+            1357081855123456987
         )
 
     def test_dsn_constructor(self):
